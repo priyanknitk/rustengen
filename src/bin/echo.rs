@@ -1,22 +1,25 @@
 use anyhow::{bail, Context};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::io::{StdoutLock, Write};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Message {
-    src: String,
+pub struct Message<Payload> {
+    pub src: String,
     #[serde(rename = "dest")]
-    dst: String,
-    body: Body,
+    pub dst: String,
+    pub body: Body<Payload>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Body {
+pub struct Body<Payload> {
     #[serde(rename = "msg_id")]
-    id: Option<usize>,
-    in_reply_to: Option<usize>,
+    pub id: Option<usize>,
+    pub in_reply_to: Option<usize>,
     #[serde(flatten)]
-    payload: Payload,
+    pub payload: Payload,
+}
+pub trait Node<Payload> {
+    fn step(&mut self, input: Message<Payload>, output: &mut StdoutLock) -> anyhow::Result<()>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,35 +39,30 @@ enum Payload {
     },
     Generate,
     GenerateOk {
-        id: usize,
+        id: String,
     }
 }
 
-struct Node {
+struct EchoNode {
     id: String,
     node_ids: Vec<String>,
     msg_id: usize,
 }
 
-impl Node {
-    pub fn new() -> Self {
-        Node {
-            id: "".to_string(),
-            node_ids: vec![],
+impl EchoNode {
+    fn new() -> Self {
+        Self {
+            id: String::new(),
+            node_ids: Vec::new(),
             msg_id: 0,
         }
     }
+}
 
-    pub fn step(
-        &mut self,
-        input: Message,
-        output: &mut StdoutLock,
-    ) -> anyhow::Result<()> {
+impl Node<Payload> for EchoNode {
+    fn step(&mut self, input: Message<Payload>, output: &mut StdoutLock) -> anyhow::Result<()> {
         match input.body.payload {
-            Payload::Init {
-                node_id,
-                node_ids,
-            } => {
+            Payload::Init { node_id, node_ids } => {
                 self.id = node_id;
                 self.node_ids = node_ids;
                 let reply = Message {
@@ -77,7 +75,8 @@ impl Node {
                     },
                 };
                 self.msg_id += 1;
-                serde_json::to_writer(&mut *output, &reply).context("serialize response to init")?;
+                serde_json::to_writer(&mut *output, &reply)
+                    .context("serialize response to init")?;
                 output.write_all(b"\n").context("write newline")?;
             }
             Payload::Echo { echo } => {
@@ -91,21 +90,8 @@ impl Node {
                     },
                 };
                 self.msg_id += 1;
-                serde_json::to_writer(&mut *output, &reply).context("serialize response to echo")?;
-                output.write_all(b"\n").context("write newline")?;
-            }
-            Payload::Generate => {
-                let reply = Message {
-                    src: self.id.clone(),
-                    dst: input.src,
-                    body: Body {
-                        id: Some(self.msg_id),
-                        in_reply_to: input.body.id,
-                        payload: Payload::GenerateOk { id: self.msg_id },
-                    },
-                };
-                self.msg_id += 1;
-                serde_json::to_writer(&mut *output, &reply).context("serialize response to generate")?;
+                serde_json::to_writer(&mut *output, &reply)
+                    .context("serialize response to echo")?;
                 output.write_all(b"\n").context("write newline")?;
             }
             Payload::InitOk => bail!("Unexpected InitOk message"),
@@ -115,12 +101,15 @@ impl Node {
     }
 }
 
-fn main() -> anyhow::Result<()> {
+pub fn main_loop<S, Payload>(mut state: S) -> anyhow::Result<()>
+where
+    S: Node<Payload>,
+    Payload: DeserializeOwned
+{
     let stdin = std::io::stdin().lock();
-    let inputs = serde_json::Deserializer::from_reader(stdin).into_iter::<Message>();
+    let inputs = serde_json::Deserializer::from_reader(stdin).into_iter::<Message<Payload>>();
 
     let mut stdout = std::io::stdout().lock();
-    let mut state: Node = Node::new();
     for input in inputs {
         let input = input?;
         state
@@ -128,4 +117,8 @@ fn main() -> anyhow::Result<()> {
             .context("Failed to process message")?;
     }
     Ok(())
+}
+
+fn main() -> anyhow::Result<()> {
+    main_loop(EchoNode::new())
 }
