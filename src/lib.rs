@@ -1,4 +1,4 @@
-use std::io::{StdoutLock, Write};
+use std::io::{BufRead, StdoutLock, Write};
 
 use anyhow::Context;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -47,14 +47,16 @@ where
     P: DeserializeOwned,
     N: Node<S, P>,
 {
-    let mut stdin = std::io::stdin().lock();
+    let mut stdin = std::io::stdin().lock().lines();
     let mut stdout = std::io::stdout().lock();
 
-    let init_msg = serde_json::Deserializer::from_reader(&mut stdin)
-        .into_iter::<Message<InitPayload>>()
-        .next()
-        .expect("No init message received")
-        .context("Failed to read init message")?;
+    let init_msg: Message<InitPayload> = serde_json::from_str(
+        &stdin
+            .next()
+            .expect("No init message received")
+            .context("Failed to read init message")?,
+    )
+    .context("Failed to read init message")?;
 
     let InitPayload::Init(init) = init_msg.body.payload else {
         panic!("Expected Init message, got {:?}", init_msg.body.payload);
@@ -74,9 +76,9 @@ where
     serde_json::to_writer(&mut stdout, &reply).context("serialize response to init")?;
     stdout.write_all(b"\n").context("write newline")?;
 
-    let inputs = serde_json::Deserializer::from_reader(stdin).into_iter::<Message<P>>();
-    for input in inputs {
-        let input = input?;
+    for line in stdin {
+        let line = line?;
+        let input: Message<P> = serde_json::from_str(&line).context("Failed to parse message")?;
         node.step(input, &mut stdout)
             .context("Failed to process message")?;
     }
