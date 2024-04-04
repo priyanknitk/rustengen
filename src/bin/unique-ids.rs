@@ -1,5 +1,5 @@
 use anyhow::Context;
-use rustengan::{main_loop, Body, Init, Message, Node};
+use rustengan::{main_loop, Init, Message, Node};
 use serde::{Deserialize, Serialize};
 use std::io::{StdoutLock, Write};
 
@@ -32,19 +32,11 @@ impl Node<(), Payload> for UniqueNode
     }
 
     fn step(&mut self, input: Message<Payload>, output: &mut StdoutLock) -> anyhow::Result<()> {
-        match input.body.payload {
+        let mut reply = input.into_reply(Some(&mut self.id));
+        match reply.body.payload {
             Payload::Generate => {
                 let guid = format!("{}-{}", self.node, self.id);
-                let reply = Message {
-                    src: self.node.clone(),
-                    dst: input.src,
-                    body: Body {
-                        id: Some(self.id),
-                        in_reply_to: input.body.id,
-                        payload: Payload::GenerateOk { guid },
-                    },
-                };
-                self.id += 1;
+                reply.body.payload = Payload::GenerateOk { guid };
                 serde_json::to_writer(&mut *output, &reply)
                     .context("serialize response to generate")?;
                 output.write_all(b"\n").context("write newline")?;

@@ -16,7 +16,7 @@ enum Payload {
         messages: Vec<usize>,
     },
     Topology {
-        topology: HashMap<String, Vec<String>>
+        topology: HashMap<String, Vec<String>>,
     },
     TopologyOk,
 }
@@ -24,6 +24,7 @@ enum Payload {
 struct BroadcastNode {
     id: usize,
     messages: Vec<usize>,
+    topology: HashMap<String, Vec<String>>,
 }
 
 impl Node<(), Payload> for BroadcastNode {
@@ -34,53 +35,55 @@ impl Node<(), Payload> for BroadcastNode {
         Ok(Self {
             id: 1,
             messages: Vec::new(),
+            topology: HashMap::new(),
         })
     }
-    
-    fn step(&mut self, input: rustengan::Message<Payload>, output: &mut std::io::StdoutLock) -> anyhow::Result<()> {
-        match input.body.payload {
+
+    fn step(
+        &mut self,
+        input: rustengan::Message<Payload>,
+        output: &mut std::io::StdoutLock,
+    ) -> anyhow::Result<()> {
+        let mut reply = input.into_reply(Some(&mut self.id));
+        match reply.body.payload {
             Payload::Broadcast { message } => {
+                // if let Some(neighbor_ids) = self.topology.get(&input.dst) {
+                //     if !self.messages.contains(&message) {
+                //         let neighbor_ids = neighbor_ids
+                //             .iter()
+                //             .filter(|&neighbor_id| *neighbor_id != input.src);
+                //         for neighbor_id in neighbor_ids {
+                //             let message = rustengan::Message {
+                //                 src: input.dst.clone(),
+                //                 dst: neighbor_id.clone(),
+                //                 body: rustengan::Body {
+                //                     id: Some(self.id),
+                //                     in_reply_to: input.body.id,
+                //                     payload: Payload::Broadcast { message },
+                //                 },
+                //             };
+                //             self.id += 1;
+                //             serde_json::to_writer(&mut *output, &message)?;
+                //             output.write_all(b"\n")?;
+                //         }
+                //     }
+                // };
+
                 self.messages.push(message);
-                let reply = rustengan::Message {
-                    src: input.dst,
-                    dst: input.src,
-                    body: rustengan::Body {
-                        id: Some(self.id),
-                        in_reply_to: input.body.id,
-                        payload: Payload::BroadcastOk,
-                    },
-                };
-                self.id += 1;
+                reply.body.payload = Payload::BroadcastOk;
                 serde_json::to_writer(&mut *output, &reply)?;
                 output.write_all(b"\n")?;
             }
             Payload::Read => {
-                let reply = rustengan::Message {
-                    src: input.dst,
-                    dst: input.src,
-                    body: rustengan::Body {
-                        id: Some(self.id),
-                        in_reply_to: input.body.id,
-                        payload: Payload::ReadOk {
-                            messages: self.messages.clone(),
-                        },
-                    },
+                reply.body.payload = Payload::ReadOk {
+                    messages: self.messages.clone(),
                 };
-                self.id += 1;
                 serde_json::to_writer(&mut *output, &reply)?;
                 output.write_all(b"\n")?;
             }
-            Payload::Topology { topology: _ } => {
-                let reply = rustengan::Message {
-                    src: input.dst,
-                    dst: input.src,
-                    body: rustengan::Body {
-                        id: Some(self.id),
-                        in_reply_to: input.body.id,
-                        payload: Payload::TopologyOk,
-                    },
-                };
-                self.id += 1;
+            Payload::Topology { topology } => {
+                self.topology = topology;
+                reply.body.payload = Payload::TopologyOk;
                 serde_json::to_writer(&mut *output, &reply)?;
                 output.write_all(b"\n")?;
             }
@@ -89,7 +92,6 @@ impl Node<(), Payload> for BroadcastNode {
         Ok(())
     }
 }
-
 
 fn main() -> anyhow::Result<()> {
     main_loop::<_, BroadcastNode, _>(())
