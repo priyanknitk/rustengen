@@ -1,7 +1,9 @@
-use anyhow::Context;
-use rustengan::{main_loop, Init, Message, Node};
+use rustengan::{main_loop, Event, Init, Node};
 use serde::{Deserialize, Serialize};
-use std::io::{StdoutLock, Write};
+use std::{
+    io::StdoutLock,
+    sync::mpsc::Sender,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -19,9 +21,8 @@ struct UniqueNode {
     id: usize,
 }
 
-impl Node<(), Payload> for UniqueNode
-{
-    fn from_init(_state: (), init: Init) -> anyhow::Result<Self>
+impl Node<(), Payload> for UniqueNode {
+    fn from_init(_state: (), init: Init, _tx: Sender<Event<Payload>>) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
@@ -31,15 +32,16 @@ impl Node<(), Payload> for UniqueNode
         })
     }
 
-    fn step(&mut self, input: Message<Payload>, output: &mut StdoutLock) -> anyhow::Result<()> {
+    fn step(&mut self, input: Event<Payload>, output: &mut StdoutLock) -> anyhow::Result<()> {
+        let Event::Message(input) = input else {
+            panic!("Got injected message - {:?}", input);
+        };
         let mut reply = input.into_reply(Some(&mut self.id));
         match reply.body.payload {
             Payload::Generate => {
                 let guid = format!("{}-{}", self.node, self.id);
                 reply.body.payload = Payload::GenerateOk { guid };
-                serde_json::to_writer(&mut *output, &reply)
-                    .context("serialize response to generate")?;
-                output.write_all(b"\n").context("write newline")?;
+                reply.send(output)?;
             }
             _ => {}
         }
@@ -48,5 +50,5 @@ impl Node<(), Payload> for UniqueNode
 }
 
 fn main() -> anyhow::Result<()> {
-    main_loop::<_, UniqueNode, _>(())
+    main_loop::<_, UniqueNode, _, _>(())
 }

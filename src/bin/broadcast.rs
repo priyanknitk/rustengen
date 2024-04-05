@@ -1,6 +1,10 @@
-use std::{collections::HashMap, io::Write};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::mpsc::Sender,
+};
 
-use rustengan::{main_loop, Init, Node};
+use anyhow::Context;
+use rustengan::{main_loop, Body, Event, Init, Message, Node};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,86 +17,127 @@ enum Payload {
     BroadcastOk,
     Read,
     ReadOk {
-        messages: Vec<usize>,
+        messages: HashSet<usize>,
     },
     Topology {
         topology: HashMap<String, Vec<String>>,
     },
     TopologyOk,
+    Gossip {
+        seen: HashSet<usize>,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum InjectedPayload {
+    Gossip,
 }
 
 struct BroadcastNode {
     id: usize,
-    messages: Vec<usize>,
-    topology: HashMap<String, Vec<String>>,
+    node: String,
+    messages: HashSet<usize>,
+    known: HashMap<String, HashSet<usize>>,
+    neighborhood: Vec<String>,
 }
 
-impl Node<(), Payload> for BroadcastNode {
-    fn from_init(_state: (), _init: Init) -> anyhow::Result<Self>
+impl Node<(), Payload, InjectedPayload> for BroadcastNode {
+    fn from_init(
+        _state: (),
+        init: Init,
+        tx: Sender<Event<Payload, InjectedPayload>>,
+    ) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
+        std::thread::spawn(move || {
+            // TODO: handle EOF signal
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                if let Err(_) = tx.send(Event::Injected(InjectedPayload::Gossip)) {
+                    break;
+                }
+            }
+        });
         Ok(Self {
             id: 1,
-            messages: Vec::new(),
-            topology: HashMap::new(),
+            node: init.node_id,
+            messages: HashSet::new(),
+            known: init
+                .node_ids
+                .into_iter()
+                .map(|id| (id, HashSet::new()))
+                .collect(),
+            neighborhood: Vec::new(),
         })
     }
 
     fn step(
         &mut self,
-        input: rustengan::Message<Payload>,
+        input: Event<Payload, InjectedPayload>,
         output: &mut std::io::StdoutLock,
     ) -> anyhow::Result<()> {
-        let mut reply = input.into_reply(Some(&mut self.id));
-        match reply.body.payload {
-            Payload::Broadcast { message } => {
-                // if let Some(neighbor_ids) = self.topology.get(&input.dst) {
-                //     if !self.messages.contains(&message) {
-                //         let neighbor_ids = neighbor_ids
-                //             .iter()
-                //             .filter(|&neighbor_id| *neighbor_id != input.src);
-                //         for neighbor_id in neighbor_ids {
-                //             let message = rustengan::Message {
-                //                 src: input.dst.clone(),
-                //                 dst: neighbor_id.clone(),
-                //                 body: rustengan::Body {
-                //                     id: Some(self.id),
-                //                     in_reply_to: input.body.id,
-                //                     payload: Payload::Broadcast { message },
-                //                 },
-                //             };
-                //             self.id += 1;
-                //             serde_json::to_writer(&mut *output, &message)?;
-                //             output.write_all(b"\n")?;
-                //         }
-                //     }
-                // };
-
-                self.messages.push(message);
-                reply.body.payload = Payload::BroadcastOk;
-                serde_json::to_writer(&mut *output, &reply)?;
-                output.write_all(b"\n")?;
+        match input {
+            Event::Message(message) => {
+                let mut reply = message.into_reply(Some(&mut self.id));
+                match reply.body.payload {
+                    Payload::Broadcast { message } => {
+                        self.messages.insert(message);
+                        reply.body.payload = Payload::BroadcastOk;
+                        reply.send(output)?;
+                    }
+                    Payload::Read => {
+                        reply.body.payload = Payload::ReadOk {
+                            messages: self.messages.clone(),
+                        };
+                        reply.send(output)?;
+                    }
+                    Payload::Topology { mut topology } => {
+                        self.neighborhood = topology
+                            .remove(&self.node)
+                            .unwrap_or_else(|| panic!("No topology given for node: {}", self.node));
+                        reply.body.payload = Payload::TopologyOk;
+                        reply.send(output)?;
+                    }
+                    Payload::Gossip { seen } => {
+                        self.messages.extend(seen);
+                    }
+                    Payload::BroadcastOk
+                    | Payload::ReadOk { messages: _ }
+                    | Payload::TopologyOk => {}
+                }
             }
-            Payload::Read => {
-                reply.body.payload = Payload::ReadOk {
-                    messages: self.messages.clone(),
-                };
-                serde_json::to_writer(&mut *output, &reply)?;
-                output.write_all(b"\n")?;
-            }
-            Payload::Topology { topology } => {
-                self.topology = topology;
-                reply.body.payload = Payload::TopologyOk;
-                serde_json::to_writer(&mut *output, &reply)?;
-                output.write_all(b"\n")?;
-            }
-            _ => {}
+            Event::Injected(payload) => match payload {
+                InjectedPayload::Gossip => {
+                    for n in &self.neighborhood {
+                        let n_knows = &self.known[n];
+                        Message {
+                            src: self.node.clone(),
+                            dst: n.to_string(),
+                            body: Body {
+                                id: None,
+                                in_reply_to: None,
+                                payload: Payload::Gossip {
+                                    seen: self
+                                        .messages
+                                        .iter()
+                                        .copied()
+                                        .filter(|m| !n_knows.contains(m))
+                                        .collect(),
+                                },
+                            },
+                        }
+                        .send(&mut *output)
+                        .with_context(|| format!("Gossip to {}", n))?;
+                    }
+                }
+            },
+            Event::EOF => {}
         }
         Ok(())
     }
 }
 
 fn main() -> anyhow::Result<()> {
-    main_loop::<_, BroadcastNode, _>(())
+    main_loop::<_, BroadcastNode, _, InjectedPayload>(())
 }
