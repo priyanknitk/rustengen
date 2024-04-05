@@ -132,7 +132,7 @@ where
         for line in stdin {
             let line = line.expect("Failed to read line");
             let input: Message<P> = serde_json::from_str(&line).expect("Failed to parse message");
-            if let Err(_) = tx.send(Event::Message((input))) {
+            if let Err(_) = tx.send(Event::Message(input)) {
                 return Ok(());
             }
         }
