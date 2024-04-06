@@ -102,18 +102,11 @@ impl Node<(), Payload, ()> for KafkaNode {
             }
             Payload::ListCommittedOffsets { keys } => {
                 let offsets = keys
-                    .iter()
-                    .map(|key| {
-                        if let Some(log) = self.log_map.get(key) {
+                    .into_iter()
+                    .filter_map(|key| {
+                        if let Some(log) = self.log_map.get(&key) {
                             let offset = log.last().map(|(offset, _)| *offset).unwrap_or(0);
-                            Some((key.clone(), offset))
-                        } else {
-                            None
-                        }
-                    })
-                    .filter_map(|item| {
-                        if let Some(item) = item {
-                            Some(item)
+                            Some((key, offset))
                         } else {
                             None
                         }
