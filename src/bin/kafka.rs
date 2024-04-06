@@ -104,9 +104,8 @@ impl Node<(), Payload, ()> for KafkaNode {
                 let offsets = keys
                     .into_iter()
                     .filter_map(|key| {
-                        if let Some(log) = self.log_map.get(&key) {
-                            let offset = log.last().map(|(offset, _)| *offset).unwrap_or(0);
-                            Some((key, offset))
+                        if let Some(offset) = self.committed_offsets.get(&key) {
+                            Some((key, *offset))
                         } else {
                             None
                         }
