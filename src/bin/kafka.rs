@@ -75,11 +75,11 @@ impl Node<(), Payload, ()> for KafkaNode {
             }
             Payload::Poll { offsets } => {
                 let mut messages = HashMap::new();
-                for (key, offset) in offsets {
+                offsets.into_iter().for_each(|(key, offset)| {
                     let msgs = self
                         .log_map
                         .entry(key.clone())
-                        .or_insert(Vec::new());
+                        .or_insert_with(Vec::new);
                     // Find the first message with the offset using binary search
                     let index = match msgs.binary_search_by_key(&offset, |&(offset, _)| offset) {
                         Ok(index) => index,
@@ -87,7 +87,7 @@ impl Node<(), Payload, ()> for KafkaNode {
                     };
                     let msgs = msgs[index..].to_vec();
                     messages.insert(key, msgs);
-                }
+                });
                 reply.body.payload = Payload::PollOk { messages };
                 reply.send(output)?;
             }
