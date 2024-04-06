@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::mpsc::Sender,
+    thread::JoinHandle,
 };
 
 use anyhow::Context;
@@ -40,6 +41,7 @@ struct BroadcastNode {
     messages: HashSet<usize>,
     known: HashMap<String, HashSet<usize>>,
     neighborhood: Vec<String>,
+    jh: Option<JoinHandle<()>>,
 }
 
 impl Node<(), Payload, InjectedPayload> for BroadcastNode {
@@ -51,10 +53,9 @@ impl Node<(), Payload, InjectedPayload> for BroadcastNode {
     where
         Self: Sized,
     {
-        std::thread::spawn(move || {
-            // TODO: handle EOF signal
+        let jh = std::thread::spawn(move || {
             loop {
-                std::thread::sleep(std::time::Duration::from_millis(300));
+                std::thread::sleep(std::time::Duration::from_millis(100));
                 if let Err(_) = tx.send(Event::Injected(InjectedPayload::Gossip)) {
                     break;
                 }
@@ -70,6 +71,7 @@ impl Node<(), Payload, InjectedPayload> for BroadcastNode {
                 .map(|id| (id, HashSet::new()))
                 .collect(),
             neighborhood: Vec::new(),
+            jh: Some(jh),
         })
     }
 
@@ -144,7 +146,13 @@ impl Node<(), Payload, InjectedPayload> for BroadcastNode {
                     }
                 }
             },
-            Event::EOF => {}
+            Event::EOF => {
+                self.jh
+                    .take()
+                    .expect("Join handle missing")
+                    .join()
+                    .expect("Failed to join thread");
+            }
         }
         Ok(())
     }
