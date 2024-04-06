@@ -121,9 +121,15 @@ impl Node<(), Payload, InjectedPayload> for BroadcastNode {
                             .iter()
                             .copied()
                             .partition(|m| n_knows.contains(m));
+                        let additional_cap = (10 * notify_of.len() / 100) as u32;
                         let mut rng = rand::thread_rng();
                         // include a couple of extra messages to let them know that we know them
-                        notify_of.extend(already_known.iter().filter(|_| rng.gen_ratio(10.min(already_known.len() as u32), already_known.len() as u32)));
+                        notify_of.extend(already_known.iter().filter(|_| {
+                            rng.gen_ratio(
+                                additional_cap.min(already_known.len() as u32),
+                                already_known.len() as u32,
+                            )
+                        }));
                         Message {
                             src: self.node.clone(),
                             dst: n.to_string(),
