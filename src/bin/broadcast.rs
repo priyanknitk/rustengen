@@ -4,6 +4,7 @@ use std::{
 };
 
 use anyhow::Context;
+use rand::Rng;
 use rustengan::{main_loop, Body, Event, Init, Message, Node};
 use serde::{Deserialize, Serialize};
 
@@ -115,20 +116,21 @@ impl Node<(), Payload, InjectedPayload> for BroadcastNode {
                 InjectedPayload::Gossip => {
                     for n in &self.neighborhood {
                         let n_knows = &self.known[n];
+                        let (already_known, mut notify_of): (HashSet<_>, HashSet<_>) = self
+                            .messages
+                            .iter()
+                            .copied()
+                            .partition(|m| n_knows.contains(m));
+                        let mut rng = rand::thread_rng();
+                        // include a couple of extra messages to let them know that we know them
+                        notify_of.extend(already_known.iter().filter(|_| rng.gen_ratio(10.min(already_known.len() as u32), already_known.len() as u32)));
                         Message {
                             src: self.node.clone(),
                             dst: n.to_string(),
                             body: Body {
                                 id: None,
                                 in_reply_to: None,
-                                payload: Payload::Gossip {
-                                    seen: self
-                                        .messages
-                                        .iter()
-                                        .copied()
-                                        .filter(|m| !n_knows.contains(m))
-                                        .collect(),
-                                },
+                                payload: Payload::Gossip { seen: notify_of },
                             },
                         }
                         .send(&mut *output)
